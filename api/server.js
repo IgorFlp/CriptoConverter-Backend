@@ -65,6 +65,57 @@ app.get("/conversionHistory", async (req, res) => {
     console.log("Erro na requisição: " + error);
   }
 });
+//Criar um GET apenas pro relatorio de conversoes juntando colunas de
+// DB.conversionHistory + coinGecko e retornar 1 objeto
+app.get("/historyTable", async (req, res) => {
+  try {
+    const { userID } = req.query;
+    let conversionHistory, currencies;
+    const user = await db
+      .collection("User")
+      .findOne({ _id: new ObjectId(`${userID}`) });
+    if (user) {
+      conversionHistory = user.conversionHistory;
+    }
+
+    const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd`;
+    const params = {
+      accept: "application/json",
+      "x-cg-pro-api-key": GECKO_API_KEY,
+    };
+    const response = await axios.get(url, params);
+    //console.log(response);
+    if (response) {
+      currencies = response.data.slice(0, 30);
+    }
+    if (currencies && conversionHistory) {
+      let historyTable = [];
+      conversionHistory.map((cH, index) => {
+        const date = new Date(cH.timestamp);
+
+        const pad = (n) => n.toString().padStart(2, "0");
+
+        const day = pad(date.getDate());
+        const month = pad(date.getMonth() + 1); // Mês começa do zero
+        const year = date.getFullYear();
+
+        const hours = pad(date.getHours());
+        const minutes = pad(date.getMinutes());
+        const seconds = pad(date.getSeconds());
+
+        let formated = `${day}/${month}/${year} - ${hours}:${minutes}:${seconds}`;
+        cH.timestamp = formated;
+        let c = currencies.filter((item) => item.id === cH.coinID);
+
+        historyTable.push({ ...cH, ...c[0] });
+      });
+      res.send(historyTable);
+    }
+  } catch (error) {
+    console.log("Erro na requisição: " + error);
+  }
+});
+
 app.post("/login", async (req, res) => {
   const { email, password } = req.body;
   const user = await db.collection("User").findOne({ email, password });
@@ -124,6 +175,40 @@ app.post("/conversionHistory", async (req, res) => {
     } else {
       console.log("Erro desconhecido: " + error);
     }
+  }
+});
+app.get("/favoriteCoinsPage", async (req, res) => {
+  try {
+    const { userID } = req.query;
+    let favoriteCoins, currencies;
+    const user = await db
+      .collection("User")
+      .findOne({ _id: new ObjectId(`${userID}`) });
+    if (user) {
+      favoriteCoins = user.favoriteCoins;
+    }
+
+    const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd`;
+    const params = {
+      accept: "application/json",
+      "x-cg-pro-api-key": GECKO_API_KEY,
+    };
+    const response = await axios.get(url, params);
+    //console.log(response);
+    if (response) {
+      currencies = response.data.slice(0, 30);
+    }
+    if (currencies && favoriteCoins) {
+      let favMod = [];
+      favoriteCoins.map((fC, index) => {
+        let c = currencies.filter((item) => item.id === fC);
+
+        favMod.push(c[0]);
+      });
+      res.status(200).send(favMod);
+    }
+  } catch (error) {
+    console.log("Erro na requisição: " + error);
   }
 });
 app.put("/favoriteCoins", async (req, res) => {
