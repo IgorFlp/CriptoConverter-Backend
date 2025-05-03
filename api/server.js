@@ -7,10 +7,15 @@ import "./loadEnv.js";
 import rateLimit from "express-rate-limit";
 import PQueue from "p-queue";
 import jwt from "jsonwebtoken";
-import CookieParser from "cookieparser";
+
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+// Importa cookie-parser via require
+const cookieParser = require("cookie-parser");
 
 const PORT = 5000;
 const SECRET = process.env.SECRET;
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN;
 const app = express();
 const GECKO_API_KEY = process.env.GECKO_API_KEY;
 
@@ -28,9 +33,88 @@ const geckoQueue = new PQueue({
 });
 
 app.use(limiter);
-app.use(cors());
+app.use(
+  cors({
+    origin: "http://localhost:5173",
+    credentials: true,
+  })
+);
 app.use(express.json());
+app.use(cookieParser());
 
+function authenticateJWT(req, res, next) {
+  //console.log("Cookies: " + JSON.stringify(req.cookies));
+  const token = req.cookies.token || req.headers.authorization?.split(" ")[1];
+  //console.log("Token recebido: " + token);
+  if (!token) return res.sendStatus(401);
+  jwt.verify(token, SECRET, (err, user) => {
+    if (err) return res.sendStatus(403);
+    req.user = user;
+    next();
+  });
+}
+
+// Exemplo de rota protegida
+app.get("/protected", authenticateJWT, (req, res) => {
+  res.json({ message: "Você está autenticado!", user: req.user });
+});
+app.get("/me", authenticateJWT, (req, res) => {
+  // req.user foi preenchido pelo middleware JWT
+
+  res.json({ userName: req.user.userName });
+});
+app.post("/register", async (req, res) => {
+  const { user, password } = req.body;
+  //console.log("user: " + user);
+  const find = await db.collection("User").findOne({ username: user });
+  //console.log(find);
+  if (find != null) {
+    res
+      .status(409)
+      .json({ message: "Nome de usuario existente, favor escolher outro." });
+  } else {
+    const newUser = {
+      username: user,
+      password: password,
+      favoriteCoins: [],
+      conversionHistory: [],
+    };
+    const response = await db.collection("User").insertOne(newUser);
+    console.log("response: " + response.insertedId);
+    const userId = response.insertedId;
+
+    if (response) {
+      res.status(200).json({ message: "Usuario criado" });
+    } else {
+      res.status(401).send("Invalid credentials");
+    }
+  }
+});
+app.post("/login", async (req, res) => {
+  const { user, password } = req.body;
+  //console.log("User: " + user);
+  const response = await db
+    .collection("User")
+    .findOne({ username: user, password: password });
+  //console.log("Response: " + response);
+  const userId = response._id;
+  const userName = response.username;
+  const userFavorites = response.favoriteCoins;
+  if (response) {
+    const token = jwt.sign({ userId: userId, userName: userName }, SECRET, {
+      expiresIn: "2h",
+    });
+    // Para produção, use cookie HttpOnly:
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: false,
+      sameSite: "Lax",
+    });
+    res.json({ userName: userName });
+  } else {
+    res.status(401).send("Invalid credentials");
+  }
+});
 app.get("/", (req, res) => {
   res.send("Hello World");
 });
@@ -50,7 +134,8 @@ app.get("/currency", async (req, res) => {
   const { id, currency } = req.query;
   if (id && currency) {
     const coins = await geckoQueue.add(async () => {
-      console.log("Enfileirado currency:id" + currency + " " + id);
+      console.log("Query recebida:", req.query);
+      console.log("Enfileirado currency:id: " + currency + " " + id);
       const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=${currency}&ids=${id}`;
       const response = await axios.get(url, {
         headers: {
@@ -78,9 +163,9 @@ app.get("/currency", async (req, res) => {
     res.send(coins);
   }
 });
-app.get("/conversionHistory", async (req, res) => {
+app.get("/conversionHistory", authenticateJWT, async (req, res) => {
   try {
-    const { userID } = req.query;
+    const userID = req.user.userId;
     const user = await db
       .collection("User")
       .findOne({ _id: new ObjectId(`${userID}`) });
@@ -93,91 +178,10 @@ app.get("/conversionHistory", async (req, res) => {
   }
 });
 
-app.get("/historyTable", async (req, res) => {
+app.post("/conversionHistory", authenticateJWT, async (req, res) => {
   try {
-    const { userID } = req.query;
-    let conversionHistory;
-    const user = await db
-      .collection("User")
-      .findOne({ _id: new ObjectId(`${userID}`) });
-    if (user) {
-      conversionHistory = user.conversionHistory;
-    }
-
-    if (conversionHistory) {
-      let historyTable = [];
-      conversionHistory.map((cH, index) => {
-        const date = new Date(cH.timestamp);
-
-        const pad = (n) => n.toString().padStart(2, "0");
-
-        const day = pad(date.getDate());
-        const month = pad(date.getMonth() + 1); // Mês começa do zero
-        const year = date.getFullYear();
-
-        const hours = pad(date.getHours());
-        const minutes = pad(date.getMinutes());
-        const seconds = pad(date.getSeconds());
-
-        let formated = `${day}/${month}/${year} - ${hours}:${minutes}:${seconds}`;
-        cH.timestamp = formated;
-
-        historyTable.push(cH);
-      });
-      res.send(historyTable);
-    }
-  } catch (error) {
-    console.log("Erro na requisição: " + error);
-  }
-});
-app.post("/register", async (req, res) => {
-  const { user, password } = req.body;
-  //console.log("user: " + user);
-  const find = await db.collection("User").findOne({ username: user });
-  //console.log(find);
-  if (find != null) {
-    res
-      .status(409)
-      .json({ message: "Nome de usuario existente, favor escolher outro." });
-  } else {
-    const newUser = {
-      username: user,
-      password: password,
-      favoriteCoins: [],
-      conversionHistory: [],
-    };
-    const response = await db.collection("User").insertOne(newUser);
-    console.log("response: " + response.insertedId);
-    const userId = response.insertedId;
-
-    if (response) {
-      res.status(200).json({ message: "Usuario criado", userId });
-    } else {
-      res.status(401).send("Invalid credentials");
-    }
-  }
-});
-app.post("/login", async (req, res) => {
-  const { user, password } = req.body;
-  //console.log("User: " + user);
-  const response = await db
-    .collection("User")
-    .findOne({ username: user, password: password });
-  //console.log("Response: " + response);
-  const userId = response._id;
-  const userName = response.username;
-  const userFavorites = response.favoriteCoins;
-  if (response) {
-    res
-      .status(200)
-      .json({ message: "Login successful", userId, userName, userFavorites });
-  } else {
-    res.status(401).send("Invalid credentials");
-  }
-});
-app.post("/conversionHistory", async (req, res) => {
-  try {
-    const { userID, newConversion } = req.body;
+    const userID = req.user.userId;
+    const { newConversion } = req.body;
     const user = await db
       .collection("User")
       .findOne({ _id: new ObjectId(`${userID}`) });
@@ -195,8 +199,9 @@ app.post("/conversionHistory", async (req, res) => {
         res
           .status(404)
           .json({ message: "User not found or no update performed" });
+      } else {
+        res.status(200).json({ message: "Conversion history updated" });
       }
-      res.status(200).json({ message: "Conversion history updated" });
     } else {
       console.log("Erro no get de user");
     }
@@ -210,10 +215,10 @@ app.post("/conversionHistory", async (req, res) => {
     }
   }
 });
-app.get("/favoriteCoinsPage", async (req, res) => {
+app.get("/favoriteCoins", authenticateJWT, async (req, res) => {
   try {
-    const { userID } = req.query;
-    let favoriteCoins, currencies;
+    const userID = req.user.userId;
+    let favoriteCoins;
     const user = await db
       .collection("User")
       .findOne({ _id: new ObjectId(`${userID}`) });
@@ -228,9 +233,10 @@ app.get("/favoriteCoinsPage", async (req, res) => {
     console.log("Erro na requisição: " + error);
   }
 });
-app.put("/favoriteCoins", async (req, res) => {
+app.put("/favoriteCoins", authenticateJWT, async (req, res) => {
   try {
-    const { userID, favoriteCoins } = req.body;
+    const userID = req.user.userId;
+    const { favoriteCoins } = req.body;
     var myquery = { _id: new ObjectId(`${userID}`) };
     var newvalues = { $set: { favoriteCoins } };
     const result = await db.collection("User").updateOne(myquery, newvalues);
