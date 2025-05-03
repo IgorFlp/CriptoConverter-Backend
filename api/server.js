@@ -4,11 +4,30 @@ import { ObjectId } from "mongodb";
 import cors from "cors";
 import axios from "axios";
 import "./loadEnv.js";
+import rateLimit from "express-rate-limit";
+import PQueue from "p-queue";
+import jwt from "jsonwebtoken";
+import CookieParser from "cookieparser";
 
 const PORT = 5000;
+const SECRET = process.env.SECRET;
 const app = express();
 const GECKO_API_KEY = process.env.GECKO_API_KEY;
 
+const limiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  message: "Muitas requisições feitas. Tente novamente em breve.",
+});
+
+const geckoQueue = new PQueue({
+  concurrency: 1,
+  interval: 1500,
+  intervalCap: 1,
+  carryoverConcurrencyCount: true,
+});
+
+app.use(limiter);
 app.use(cors());
 app.use(express.json());
 
@@ -30,26 +49,34 @@ app.get("/users", async (req, res) => {
 app.get("/currency", async (req, res) => {
   const { id, currency } = req.query;
   if (id && currency) {
-    const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=${currency}&ids=${id}`;
-    const params = {
-      accept: "application/json",
-      "x-cg-pro-api-key": GECKO_API_KEY,
-    };
-    const response = await axios.get(url, params);
-    res.send(response.data);
+    const coins = await geckoQueue.add(async () => {
+      console.log("Enfileirado currency:id" + currency + " " + id);
+      const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=${currency}&ids=${id}`;
+      const response = await axios.get(url, {
+        headers: {
+          accept: "application/json",
+          "x-cg-pro-api-key": GECKO_API_KEY,
+        },
+      });
+      console.log("Executado currency:id" + currency + " " + id);
+      return response.data;
+    });
+    res.send(coins);
   } else {
-    const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd`;
-    const params = {
-      accept: "application/json",
-      "x-cg-pro-api-key": GECKO_API_KEY,
-    };
-    const response = await axios.get(url, params);
-    const currencies = response.data.slice(0, 30);
-    res.send(response.data);
+    const coins = await geckoQueue.add(async () => {
+      console.log("Enfileirado currency all");
+      const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd`;
+      const response = await axios.get(url, {
+        headers: {
+          accept: "application/json",
+          "x-cg-pro-api-key": GECKO_API_KEY,
+        },
+      });
+      console.log("Executado currency all");
+      return response.data.slice(0, 30);
+    });
+    res.send(coins);
   }
-
-  // Fetch currencies from coingecko API
-  //if currencies favorite in user collection, add favorite tag
 });
 app.get("/conversionHistory", async (req, res) => {
   try {
@@ -65,12 +92,11 @@ app.get("/conversionHistory", async (req, res) => {
     console.log("Erro na requisição: " + error);
   }
 });
-//Criar um GET apenas pro relatorio de conversoes juntando colunas de
-// DB.conversionHistory + coinGecko e retornar 1 objeto
+
 app.get("/historyTable", async (req, res) => {
   try {
     const { userID } = req.query;
-    let conversionHistory, currencies;
+    let conversionHistory;
     const user = await db
       .collection("User")
       .findOne({ _id: new ObjectId(`${userID}`) });
@@ -78,17 +104,7 @@ app.get("/historyTable", async (req, res) => {
       conversionHistory = user.conversionHistory;
     }
 
-    const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd`;
-    const params = {
-      accept: "application/json",
-      "x-cg-pro-api-key": GECKO_API_KEY,
-    };
-    const response = await axios.get(url, params);
-    //console.log(response);
-    if (response) {
-      currencies = response.data.slice(0, 30);
-    }
-    if (currencies && conversionHistory) {
+    if (conversionHistory) {
       let historyTable = [];
       conversionHistory.map((cH, index) => {
         const date = new Date(cH.timestamp);
@@ -105,9 +121,8 @@ app.get("/historyTable", async (req, res) => {
 
         let formated = `${day}/${month}/${year} - ${hours}:${minutes}:${seconds}`;
         cH.timestamp = formated;
-        let c = currencies.filter((item) => item.id === cH.coinID);
 
-        historyTable.push({ ...cH, ...c[0] });
+        historyTable.push(cH);
       });
       res.send(historyTable);
     }
@@ -115,32 +130,50 @@ app.get("/historyTable", async (req, res) => {
     console.log("Erro na requisição: " + error);
   }
 });
+app.post("/register", async (req, res) => {
+  const { user, password } = req.body;
+  //console.log("user: " + user);
+  const find = await db.collection("User").findOne({ username: user });
+  //console.log(find);
+  if (find != null) {
+    res
+      .status(409)
+      .json({ message: "Nome de usuario existente, favor escolher outro." });
+  } else {
+    const newUser = {
+      username: user,
+      password: password,
+      favoriteCoins: [],
+      conversionHistory: [],
+    };
+    const response = await db.collection("User").insertOne(newUser);
+    console.log("response: " + response.insertedId);
+    const userId = response.insertedId;
 
+    if (response) {
+      res.status(200).json({ message: "Usuario criado", userId });
+    } else {
+      res.status(401).send("Invalid credentials");
+    }
+  }
+});
 app.post("/login", async (req, res) => {
-  const { email, password } = req.body;
-  const user = await db.collection("User").findOne({ email, password });
-  const userId = user._id;
-  const userName = user.username;
-  const userFavorites = user.favoriteCoins;
-  if (user) {
+  const { user, password } = req.body;
+  //console.log("User: " + user);
+  const response = await db
+    .collection("User")
+    .findOne({ username: user, password: password });
+  //console.log("Response: " + response);
+  const userId = response._id;
+  const userName = response.username;
+  const userFavorites = response.favoriteCoins;
+  if (response) {
     res
       .status(200)
       .json({ message: "Login successful", userId, userName, userFavorites });
   } else {
     res.status(401).send("Invalid credentials");
   }
-});
-app.post("/convertCurrency", async (req, res) => {
-  //const value = req.body.value;
-  const url = "https://api.coingecko.com/api/v3/simple/price";
-  const params = {
-    accept: "application/json",
-    "x-cg-pro-api-key": GECKO_API_KEY,
-  };
-
-  const response = await axios.get(url, params);
-  //console.log("Response: ", response.data);
-  res.send(response.data);
 });
 app.post("/conversionHistory", async (req, res) => {
   try {
@@ -188,24 +221,8 @@ app.get("/favoriteCoinsPage", async (req, res) => {
       favoriteCoins = user.favoriteCoins;
     }
 
-    const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd`;
-    const params = {
-      accept: "application/json",
-      "x-cg-pro-api-key": GECKO_API_KEY,
-    };
-    const response = await axios.get(url, params);
-    //console.log(response);
-    if (response) {
-      currencies = response.data.slice(0, 30);
-    }
-    if (currencies && favoriteCoins) {
-      let favMod = [];
-      favoriteCoins.map((fC, index) => {
-        let c = currencies.filter((item) => item.id === fC);
-
-        favMod.push(c[0]);
-      });
-      res.status(200).send(favMod);
+    if (favoriteCoins) {
+      res.status(200).send(favoriteCoins);
     }
   } catch (error) {
     console.log("Erro na requisição: " + error);
