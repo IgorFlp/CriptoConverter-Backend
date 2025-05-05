@@ -19,11 +19,7 @@ const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN;
 const app = express();
 const GECKO_API_KEY = process.env.GECKO_API_KEY;
 
-const limiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 30,
-  message: "Muitas requisições feitas. Tente novamente em breve.",
-});
+
 
 const geckoQueue = new PQueue({
   concurrency: 1,
@@ -32,11 +28,13 @@ const geckoQueue = new PQueue({
   carryoverConcurrencyCount: true,
 });
 
-app.use(limiter);
+
 app.use(
   cors({
     origin: "http://localhost:5173",
     credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "Cookie"],
   })
 );
 app.use(express.json());
@@ -59,8 +57,6 @@ app.get("/protected", authenticateJWT, (req, res) => {
   res.json({ message: "Você está autenticado!", user: req.user });
 });
 app.get("/me", authenticateJWT, (req, res) => {
-  // req.user foi preenchido pelo middleware JWT
-
   res.json({ userName: req.user.userName });
 });
 app.post("/register", async (req, res) => {
@@ -92,28 +88,42 @@ app.post("/register", async (req, res) => {
 });
 app.post("/login", async (req, res) => {
   const { user, password } = req.body;
-  //console.log("User: " + user);
+  console.log("User: " + user);
   const response = await db
     .collection("User")
     .findOne({ username: user, password: password });
-  //console.log("Response: " + response);
-  const userId = response._id;
-  const userName = response.username;
-  const userFavorites = response.favoriteCoins;
+  
   if (response) {
+    const userId = response._id;
+    const userName = response.username;
     const token = jwt.sign({ userId: userId, userName: userName }, SECRET, {
       expiresIn: "2h",
     });
-    // Para produção, use cookie HttpOnly:
+    
     res.cookie("token", token, {
       httpOnly: true,
-      secure: false,
-      sameSite: "Lax",
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 2 * 60 * 60 * 1000, // 2 hours in milliseconds
+      path: "/"
     });
+    
     res.json({ userName: userName });
   } else {
     res.status(401).send("Invalid credentials");
   }
+});
+app.post("/logout", (req, res) => {
+  // Limpa o cookie do token
+  res.clearCookie("token", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: process.env.COOKIE_SAME_SITE,
+    path: "/",
+    domain: "localhost",
+  });
+
+  res.status(200).json({ message: "Logout realizado com sucesso" });
 });
 app.get("/", (req, res) => {
   res.send("Hello World");
