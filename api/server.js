@@ -19,8 +19,6 @@ const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN;
 const app = express();
 const GECKO_API_KEY = process.env.GECKO_API_KEY;
 
-
-
 const geckoQueue = new PQueue({
   concurrency: 1,
   interval: 1500,
@@ -28,10 +26,9 @@ const geckoQueue = new PQueue({
   carryoverConcurrencyCount: true,
 });
 
-
 app.use(
   cors({
-    origin: "http://localhost:5173",
+    origin: process.env.ALLOWED_ORIGIN,
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "Cookie"],
@@ -92,22 +89,22 @@ app.post("/login", async (req, res) => {
   const response = await db
     .collection("User")
     .findOne({ username: user, password: password });
-  
+
   if (response) {
     const userId = response._id;
     const userName = response.username;
     const token = jwt.sign({ userId: userId, userName: userName }, SECRET, {
       expiresIn: "2h",
     });
-    
+
     res.cookie("token", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
       maxAge: 2 * 60 * 60 * 1000, // 2 hours in milliseconds
-      path: "/"
+      path: "/",
     });
-    
+
     res.json({ userName: userName });
   } else {
     res.status(401).send("Invalid credentials");
@@ -146,27 +143,35 @@ app.get("/currency", async (req, res) => {
     const coins = await geckoQueue.add(async () => {
       console.log("Query recebida:", req.query);
       console.log("Enfileirado currency:id: " + currency + " " + id);
-      const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=${currency}&ids=${id}`;
-      const response = await axios.get(url, {
-        headers: {
-          accept: "application/json",
-          "x-cg-pro-api-key": GECKO_API_KEY,
+      const options = {
+        method: 'GET',
+        url: 'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd',
+        headers: {accept: 'application/json', 'x-cg-demo-api-key': GECKO_API_KEY},
+        params: {
+          vs_currency: currency,
+          ids: id,
         },
-      });
+      };
+      
+      const response = await axios
+        .request(options)        
+        .catch(err => console.error(err));
       console.log("Executado currency:id" + currency + " " + id);
       return response.data;
     });
     res.send(coins);
-  } else {
+  } else {    
     const coins = await geckoQueue.add(async () => {
-      console.log("Enfileirado currency all");
-      const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd`;
-      const response = await axios.get(url, {
-        headers: {
-          accept: "application/json",
-          "x-cg-pro-api-key": GECKO_API_KEY,
-        },
-      });
+      console.log("Enfileirado currency all");      
+      const options = {
+        method: 'GET',
+        url: 'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd',
+        headers: {accept: 'application/json', 'x-cg-demo-api-key': GECKO_API_KEY}
+      };
+      
+      const response = await axios
+        .request(options)        
+        .catch(err => console.error(err));
       console.log("Executado currency all");
       return response.data.slice(0, 30);
     });
