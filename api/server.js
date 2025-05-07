@@ -145,7 +145,7 @@ app.get("/currency", async (req, res) => {
       console.log("Enfileirado currency:id: " + currency + " " + id);
       const options = {
         method: "GET",
-        url: "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd",
+        url: `https://api.coingecko.com/api/v3/coins/markets?vs_currency=${currency}`,
         headers: {
           accept: "application/json",
           "x-cg-demo-api-key": GECKO_API_KEY,
