@@ -12,7 +12,7 @@ import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 // Importa cookie-parser via require
 const cookieParser = require("cookie-parser");
-
+const allowedDomain = process.env.ALLOWED_ORIGIN.replace(/^https?:\/\//, "");
 const PORT = 5000;
 const SECRET = process.env.SECRET;
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN;
@@ -117,7 +117,7 @@ app.post("/logout", (req, res) => {
     secure: process.env.NODE_ENV === "production",
     sameSite: process.env.COOKIE_SAME_SITE,
     path: "/",
-    domain: "localhost",
+    domain: allowedDomain,
   });
 
   res.status(200).json({ message: "Logout realizado com sucesso" });
@@ -144,34 +144,40 @@ app.get("/currency", async (req, res) => {
       console.log("Query recebida:", req.query);
       console.log("Enfileirado currency:id: " + currency + " " + id);
       const options = {
-        method: 'GET',
-        url: 'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd',
-        headers: {accept: 'application/json', 'x-cg-demo-api-key': GECKO_API_KEY},
+        method: "GET",
+        url: "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd",
+        headers: {
+          accept: "application/json",
+          "x-cg-demo-api-key": GECKO_API_KEY,
+        },
         params: {
           vs_currency: currency,
           ids: id,
         },
       };
-      
+
       const response = await axios
-        .request(options)        
-        .catch(err => console.error(err));
+        .request(options)
+        .catch((err) => console.error(err));
       console.log("Executado currency:id" + currency + " " + id);
       return response.data;
     });
     res.send(coins);
-  } else {    
+  } else {
     const coins = await geckoQueue.add(async () => {
-      console.log("Enfileirado currency all");      
+      console.log("Enfileirado currency all");
       const options = {
-        method: 'GET',
-        url: 'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd',
-        headers: {accept: 'application/json', 'x-cg-demo-api-key': GECKO_API_KEY}
+        method: "GET",
+        url: "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd",
+        headers: {
+          accept: "application/json",
+          "x-cg-demo-api-key": GECKO_API_KEY,
+        },
       };
-      
+
       const response = await axios
-        .request(options)        
-        .catch(err => console.error(err));
+        .request(options)
+        .catch((err) => console.error(err));
       console.log("Executado currency all");
       return response.data.slice(0, 30);
     });
